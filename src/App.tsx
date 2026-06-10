@@ -5,10 +5,8 @@ import {
   Send, 
   Inbox, 
   LogOut, 
-  Mail, 
   User as UserIcon, 
   CheckCircle2, 
-  MessageSquare, 
   Trash2,
   AlertCircle,
   ShieldCheck,
@@ -16,7 +14,10 @@ import {
   Square,
   Play,
   Volume2,
-  Phone
+  Phone,
+  Moon,
+  Sun,
+  MessageSquare
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -27,6 +28,10 @@ import {
   useNavigate,
   Navigate
 } from 'react-router-dom';
+import { 
+  db, auth, googleProvider, signInWithPopup, fbSignOut,
+  doc, setDoc, getDoc, collection, addDoc, onSnapshot, query, where, deleteDoc
+} from './firebase';
 
 // --- Types ---
 interface Message {
@@ -37,18 +42,41 @@ interface Message {
   toUserId: string;
 }
 
-interface User {
-  id: string;
+interface UserProfile {
+  uid: string;
   name: string;
   email: string;
   phone?: string;
+}
+
+// --- Theme Hook ---
+function useTheme() {
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('theme') === 'dark' || 
+        (!localStorage.getItem('theme') && window.matchMedia('(prefers-color-scheme: dark)').matches) 
+        ? 'dark' : 'light';
+    }
+    return 'light';
+  });
+
+  useEffect(() => {
+    const root = window.document.documentElement;
+    root.classList.remove('light', 'dark');
+    root.classList.add(theme);
+    localStorage.setItem('theme', theme);
+  }, [theme]);
+
+  const toggleTheme = () => setTheme(prev => prev === 'light' ? 'dark' : 'light');
+
+  return { theme, toggleTheme };
 }
 
 // --- Components ---
 
 function Loader() {
   return (
-    <div className="flex items-center justify-center min-h-screen bg-gray-50">
+    <div className="flex items-center justify-center min-h-screen bg-gray-50 dark:bg-slate-900 transition-colors">
       <motion.div 
         animate={{ rotate: 360 }}
         transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
@@ -58,32 +86,33 @@ function Loader() {
   );
 }
 
-function Auth({ onAuth }: { onAuth: (user: User) => void }) {
-  const [email, setEmail] = useState('');
-  const [name, setName] = useState('');
-  const [phone, setPhone] = useState('');
-  const [isRegistering, setIsRegistering] = useState(false);
+function Auth({ onAuth }: { onAuth: (user: UserProfile) => void }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const { theme, toggleTheme } = useTheme();
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSignIn = async () => {
     setLoading(true);
     setError('');
-
     try {
-      const res = await fetch('/api/auth', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          email, 
-          name: isRegistering ? name : undefined,
-          phone: isRegistering ? phone : undefined 
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Auth failed');
-      onAuth(data);
+      const result = await signInWithPopup(auth, googleProvider);
+      const user = result.user;
+      
+      const userRef = doc(db, 'users', user.uid);
+      const docSnap = await getDoc(userRef);
+      
+      let profile: UserProfile;
+      if (docSnap.exists()) {
+        profile = docSnap.data() as UserProfile;
+      } else {
+        profile = {
+          uid: user.uid,
+          name: user.displayName || 'QRBell User',
+          email: user.email || '',
+        };
+        await setDoc(userRef, profile);
+      }
+      onAuth(profile);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -92,249 +121,206 @@ function Auth({ onAuth }: { onAuth: (user: User) => void }) {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-indigo-50 via-white to-purple-50 p-4">
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-indigo-50 via-white to-purple-50 dark:from-slate-900 dark:via-slate-800 dark:to-indigo-950 p-4 transition-colors">
+      <button onClick={toggleTheme} className="absolute top-6 right-6 p-3 bg-white/50 dark:bg-slate-800/50 rounded-full shadow-sm backdrop-blur-sm border border-gray-200 dark:border-slate-700 hover:scale-105 transition-all text-gray-800 dark:text-gray-200 z-10">
+        {theme === 'light' ? <Moon size={20} /> : <Sun size={20} />}
+      </button>
+
       <motion.div 
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        className="max-w-md w-full bg-white rounded-2xl shadow-xl p-8 border border-gray-100"
+        className="max-w-md w-full bg-white dark:bg-slate-900 rounded-[2.5rem] shadow-2xl p-10 border border-gray-100 dark:border-slate-800 text-center"
       >
-        <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-16 h-16 bg-indigo-600 rounded-2xl mb-4 text-white shadow-lg">
-            <QrCode size={32} />
-          </div>
-          <h1 className="text-3xl font-bold text-gray-900">QRBell</h1>
-          <p className="text-gray-500 mt-2">Receive messages via QR code safely</p>
+        <div className="inline-flex items-center justify-center w-20 h-20 bg-gradient-to-tr from-indigo-600 to-purple-600 rounded-[1.5rem] mb-6 text-white shadow-xl shadow-indigo-600/30 transform -rotate-3">
+          <QrCode size={40} />
         </div>
+        <h1 className="text-4xl font-extrabold text-gray-900 dark:text-white tracking-tight mb-2">QRBell</h1>
+        <p className="text-gray-500 dark:text-slate-400 font-medium mb-10">The modern, secure way to be reachable.</p>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="relative">
-            <Mail className="absolute left-3 top-3 text-gray-400" size={20} />
-            <input
-              type="email"
-              placeholder="Your Email"
-              className="w-full pl-10 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-            />
+        {error && (
+          <div className="mb-6 flex items-center gap-3 text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/30 p-4 rounded-2xl border border-red-100 dark:border-red-900/50">
+            <AlertCircle size={20} />
+            <p className="text-sm font-semibold">{error}</p>
           </div>
-          
-          {isRegistering && (
-            <>
-              <div className="relative">
-                <UserIcon className="absolute left-3 top-3 text-gray-400" size={20} />
-                <input
-                  type="text"
-                  placeholder="Your Name (visible on scan)"
-                  className="w-full pl-10 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  required
-                />
-              </div>
-              <div className="relative">
-                <label className="block text-[10px] uppercase font-bold text-gray-400 mb-1 ml-1 text-left">Emergency Phone (Optional)</label>
-                <div className="relative">
-                  <input
-                    type="tel"
-                    placeholder="+47 000 00 000"
-                    className="w-full pl-4 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                    value={phone}
-                    onChange={(e) => setPhone(e.target.value)}
-                  />
-                </div>
-                <p className="text-[10px] text-gray-400 mt-1 ml-1 text-left italic">Only visible if urgent contact is needed.</p>
-              </div>
-            </>
+        )}
+
+        <button
+          onClick={handleSignIn}
+          disabled={loading}
+          className="w-full py-4 bg-gray-900 dark:bg-white text-white dark:text-gray-900 hover:bg-black dark:hover:bg-gray-100 font-bold rounded-2xl shadow-xl transition-all active:scale-[0.98] disabled:opacity-50 flex justify-center items-center gap-3"
+        >
+          {loading ? 'Processing...' : (
+            <>Continue with Google</>
           )}
-
-          {error && (
-            <div className="flex items-center gap-2 text-red-600 text-sm bg-red-50 p-3 rounded-lg border border-red-100">
-              <AlertCircle size={16} />
-              <p>{error}</p>
-            </div>
-          )}
-
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-lg shadow-md transition-all active:scale-[0.98] disabled:opacity-50"
-          >
-            {loading ? 'Processing...' : (isRegistering ? 'Create User' : 'Sign In')}
-          </button>
-        </form>
-
-        <div className="mt-6 text-center">
-          <button
-            onClick={() => setIsRegistering(!isRegistering)}
-            className="text-indigo-600 hover:text-indigo-800 font-medium"
-          >
-            {isRegistering ? "Back to Sign In" : "Need an account? New User"}
-          </button>
-        </div>
+        </button>
       </motion.div>
     </div>
   );
 }
 
-function Dashboard({ user, onLogout }: { user: User, onLogout: () => void }) {
+function Dashboard({ user, onLogout, onUpdatePhone }: { user: UserProfile, onLogout: () => void, onUpdatePhone: (p: string) => void }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
+  const [phoneInput, setPhoneInput] = useState(user.phone || '');
+  const [savingPhone, setSavingPhone] = useState(false);
+  const { theme, toggleTheme } = useTheme();
 
-  const shareUrl = `${window.location.origin}/reach/${user.id}`;
-
-  const fetchMessages = async () => {
-    try {
-      const res = await fetch(`/api/messages/${user.id}`);
-      const data = await res.json();
-      setMessages(data);
-    } catch (err) {
-      console.error('Failed to fetch messages', err);
-    } finally {
-      setLoading(false);
-    }
-  };
+  const shareUrl = `${window.location.origin}/reach/${user.uid}`;
 
   useEffect(() => {
-    fetchMessages();
-    const interval = setInterval(fetchMessages, 5000); // Poll every 5 seconds
-    return () => clearInterval(interval);
-  }, [user]);
+    const q = query(collection(db, 'messages'), where('toUserId', '==', user.uid));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const msgs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Message));
+      msgs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+      setMessages(msgs);
+      setLoading(false);
+    }, (error) => {
+      console.error("Firestore error:", error);
+      setLoading(false);
+    });
+    return () => unsubscribe();
+  }, [user.uid]);
 
   const deleteMessage = async (msgId: string) => {
     try {
-      await fetch(`/api/messages/${msgId}`, { method: 'DELETE' });
-      setMessages(prev => prev.filter(m => m.id !== msgId));
+      await deleteDoc(doc(db, 'messages', msgId));
     } catch (err) {
       console.error('Delete failed', err);
     }
   };
 
+  const savePhone = async () => {
+    setSavingPhone(true);
+    try {
+      await setDoc(doc(db, 'users', user.uid), { phone: phoneInput }, { merge: true });
+      onUpdatePhone(phoneInput);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setSavingPhone(false);
+    }
+  };
+
   return (
-    <div className="min-h-screen bg-gray-50 flex flex-col">
-      <header className="bg-white border-b border-gray-200 sticky top-0 z-10 px-4 md:px-8 py-4 flex justify-between items-center no-print">
-        <div className="flex items-center gap-2">
-          <div className="w-10 h-10 bg-indigo-600 rounded-lg flex items-center justify-center text-white">
-            <QrCode size={24} />
+    <div className="min-h-screen bg-gray-50 dark:bg-slate-950 flex flex-col transition-colors">
+      <header className="bg-white/80 dark:bg-slate-900/80 backdrop-blur-md border-b border-gray-200 dark:border-slate-800 sticky top-0 z-10 px-4 md:px-8 py-4 flex justify-between items-center no-print">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 bg-gradient-to-tr from-indigo-500 to-purple-600 rounded-xl flex items-center justify-center text-white shadow-md">
+            <QrCode size={20} />
           </div>
-          <span className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-indigo-600 to-purple-600">
+          <span className="text-xl font-extrabold bg-clip-text text-transparent bg-gradient-to-r from-indigo-600 to-purple-600 dark:from-indigo-400 dark:to-purple-400">
             QRBell
           </span>
         </div>
         <div className="flex items-center gap-4">
-          <div className="hidden md:flex flex-col items-end">
-            <span className="text-sm font-bold text-gray-900">{user.name}</span>
-            <span className="text-[10px] text-gray-500 uppercase tracking-tighter">Active Personal Account</span>
+          <button onClick={toggleTheme} className="p-2 text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-slate-800 rounded-full transition-all">
+            {theme === 'light' ? <Moon size={20} /> : <Sun size={20} />}
+          </button>
+          <div className="hidden md:flex flex-col items-end mr-2">
+            <span className="text-sm font-bold text-gray-900 dark:text-gray-100">{user.name}</span>
+            <span className="text-[10px] text-gray-500 dark:text-gray-400 uppercase tracking-widest font-semibold">Active Account</span>
           </div>
           <button 
             onClick={onLogout}
-            className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-full transition-all"
+            className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-full transition-all"
+            title="Log out"
           >
             <LogOut size={20} />
           </button>
         </div>
       </header>
 
-      <main className="flex-1 max-w-6xl w-full mx-auto p-4 md:p-8 grid grid-cols-1 lg:grid-cols-12 gap-8">
-        {/* Left Column: QR and Info */}
-        <section className="lg:col-span-5 space-y-6">
+      <main className="flex-1 max-w-7xl w-full mx-auto p-4 md:p-8 grid grid-cols-1 xl:grid-cols-12 gap-8">
+        <section className="xl:col-span-4 space-y-6">
           <motion.div 
-            initial={{ opacity: 0, x: -20 }}
-            animate={{ opacity: 1, x: 0 }}
-            className="bg-white p-8 rounded-3xl shadow-sm border border-gray-100 flex flex-col items-center text-center group"
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="bg-white dark:bg-slate-900 p-8 rounded-[2rem] shadow-sm border border-gray-100 dark:border-slate-800 flex flex-col items-center text-center group relative overflow-hidden"
           >
-            <h2 className="text-xl font-bold mb-6 flex items-center gap-2 text-gray-800">
-              <QrCode className="text-indigo-600" /> Print Your QR Code
-            </h2>
+            <div className="absolute top-0 w-full h-32 bg-gradient-to-b from-indigo-50 dark:from-slate-800/50 to-transparent -z-10" />
             
-            <div className="p-6 bg-white border-8 border-indigo-50 rounded-[2.5rem] mb-6 shadow-sm transition-transform group-hover:scale-[1.02] print:border-0 print:p-0">
-              <QRCodeSVG 
-                value={shareUrl} 
-                size={220} 
-                level="H" 
-                includeMargin={false}
-              />
+            <div className="p-4 bg-white dark:bg-slate-200 rounded-[2.5rem] mb-8 shadow-xl shadow-indigo-100/50 dark:shadow-none transition-transform group-hover:scale-[1.02] border border-gray-100 print:border-0 print:p-0">
+              <QRCodeSVG value={shareUrl} size={180} level="H" includeMargin={false} />
             </div>
-
-            <p className="text-sm text-gray-500 mb-8 max-w-xs leading-relaxed">
-              Print this code and stick it where you want to be reachable (car window, mailbox, front door).
-            </p>
 
             <div className="flex flex-col w-full gap-3 no-print">
               <button 
                 onClick={() => window.print()}
-                className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold shadow-lg shadow-indigo-200 hover:bg-indigo-700 hover:shadow-indigo-300 transition-all flex items-center justify-center gap-2 active:scale-[0.98]"
+                className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold shadow-lg shadow-indigo-200 dark:shadow-indigo-900/20 hover:bg-indigo-700 transition-all flex items-center justify-center gap-2 active:scale-[0.98]"
               >
                 <QrCode size={18} /> Print QR Sticker
               </button>
               <button 
                 onClick={() => {
                   navigator.clipboard.writeText(shareUrl);
-                  alert('Scan URL copied!');
+                  alert('Scan URL copied to clipboard!');
                 }}
-                className="w-full py-3 bg-white border-2 border-indigo-100 text-indigo-600 rounded-2xl font-bold hover:bg-indigo-50 transition-all active:scale-[0.98]"
+                className="w-full py-3 bg-gray-50 dark:bg-slate-800 border-2 border-gray-200 dark:border-slate-700 text-gray-700 dark:text-gray-200 rounded-2xl font-bold hover:bg-gray-100 dark:hover:bg-slate-700 transition-all active:scale-[0.98]"
               >
-                Copy Link
+                Copy Direct Link
               </button>
             </div>
           </motion.div>
 
-          <div className="bg-gradient-to-br from-indigo-600 to-purple-700 p-8 rounded-3xl text-white shadow-xl no-print overflow-hidden relative">
-            <ShieldCheck className="absolute -right-4 -bottom-4 w-32 h-32 opacity-10" />
-            <h3 className="font-bold text-lg mb-3">Privacy Guard</h3>
-            <p className="text-indigo-100 text-sm leading-relaxed mb-6">
-              When people scan this code, they see a simple messenger. They <b>never</b> see your phone number, email, or real identity unless you enable Emergency Call.
+          <div className="bg-white dark:bg-slate-900 p-6 rounded-[2rem] border border-gray-100 dark:border-slate-800 shadow-sm no-print">
+            <h3 className="font-bold text-gray-900 dark:text-white mb-4 flex items-center gap-2">
+              <Phone className="text-indigo-500" size={18} /> Emergency Contact
+            </h3>
+            <p className="text-sm text-gray-500 dark:text-slate-400 mb-4 leading-relaxed">
+              Allow visitors to call you directly for urgent matters. Your number remains fully functional.
             </p>
-            
-            <div className="bg-white/10 rounded-2xl p-4 border border-white/20 mb-6">
-              <div className="flex justify-between items-center mb-2">
-                <span className="text-[10px] uppercase font-bold text-indigo-200">Emergency Call Support</span>
-                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${user.phone ? 'bg-green-400 text-green-900' : 'bg-yellow-400 text-yellow-900'}`}>
-                  {user.phone ? 'ENABLED' : 'DISABLED'}
-                </span>
+            <div className="flex gap-2">
+              <input
+                type="tel"
+                value={phoneInput}
+                onChange={e => setPhoneInput(e.target.value)}
+                placeholder="e.g. +47 999 99 999"
+                className="flex-1 bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl px-4 py-2 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 text-gray-900 dark:text-white font-medium"
+              />
+              <button 
+                onClick={savePhone}
+                disabled={savingPhone || phoneInput === user.phone}
+                className="px-6 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-300 dark:disabled:bg-slate-800 text-white rounded-xl font-bold transition-all"
+              >
+                {savingPhone ? '...' : 'Save'}
+              </button>
+            </div>
+            {user.phone && (
+              <div className="mt-4 p-3 bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400 rounded-xl text-sm font-semibold flex items-center justify-between">
+                <span>Emergency calls enabled</span>
+                <Phone size={14} />
               </div>
-              <p className="text-xs font-medium mb-3">
-                {user.phone ? `Strangers can call you at ${user.phone}` : 'Scaners can only send text/voice messages.'}
-              </p>
-              {user.phone && (
-                <button 
-                  onClick={() => window.location.href = `tel:${user.phone}`}
-                  className="w-full py-2 bg-white/20 hover:bg-white/30 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2"
-                >
-                  <Phone size={14} /> Test Dialer
-                </button>
-              )}
-            </div>
-
-            <div className="flex items-center gap-2 text-xs font-bold text-indigo-200 uppercase tracking-widest">
-              <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse" /> Encrypted Link Active
-            </div>
+            )}
           </div>
         </section>
 
-        {/* Right Column: Messages Inbox */}
-        <section className="lg:col-span-7 no-print">
-          <div className="bg-white rounded-3xl shadow-sm border border-gray-100 overflow-hidden flex flex-col h-full min-h-[600px]">
-            <div className="bg-gray-50/80 px-8 py-6 border-b border-gray-100 flex items-center justify-between">
+        <section className="xl:col-span-8 no-print h-full">
+          <div className="bg-white dark:bg-slate-900 rounded-[2rem] shadow-sm border border-gray-100 dark:border-slate-800 overflow-hidden flex flex-col h-[calc(100vh-140px)] min-h-[600px]">
+            <div className="bg-white dark:bg-slate-900 px-8 py-8 border-b border-gray-100 dark:border-slate-800 flex items-center justify-between sticky top-0 z-10">
               <div>
-                <h2 className="text-2xl font-bold text-gray-900">Recent Messages</h2>
-                <p className="text-xs text-gray-500 font-medium">Auto-updates in real-time</p>
+                <h2 className="text-2xl font-extrabold text-gray-900 dark:text-white tracking-tight">Inbox</h2>
+                <div className="flex items-center gap-2 mt-1">
+                  <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+                  <p className="text-xs text-gray-500 dark:text-slate-400 font-medium">Syncing with Cloud</p>
+                </div>
               </div>
               <div className="flex flex-col items-end">
-                <span className="text-indigo-600 font-black text-3xl leading-none">{messages.length}</span>
-                <span className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">Messages</span>
+                <span className="text-indigo-600 dark:text-indigo-400 font-black text-4xl leading-none">{messages.length}</span>
+                <span className="text-[10px] text-gray-400 dark:text-slate-500 font-bold uppercase tracking-widest mt-1">Total</span>
               </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-6 space-y-4 bg-gray-50/30">
+            <div className="flex-1 overflow-y-auto p-6 md:p-8 space-y-4 bg-gray-50/50 dark:bg-slate-950/50">
               <AnimatePresence initial={false}>
                 {loading ? (
-                  <div className="flex items-center justify-center h-full text-gray-400">Loading inbox...</div>
+                  <div className="flex flex-col items-center justify-center h-full text-gray-400 dark:text-slate-600">
+                    <Loader />
+                  </div>
                 ) : messages.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center h-full text-gray-400 py-12 text-center">
-                    <Inbox size={64} strokeWidth={1} className="mb-4 text-gray-200" />
-                    <p className="text-xl font-semibold text-gray-600">No messages yet</p>
-                    <p className="text-sm max-w-xs mt-2">Try scanning your own QR code with your phone to test it!</p>
+                  <div className="flex flex-col items-center justify-center h-full text-gray-400 dark:text-slate-500 py-12 text-center">
+                    <Inbox size={64} strokeWidth={1} className="mb-6 text-gray-300 dark:text-slate-700" />
+                    <p className="text-xl font-bold text-gray-900 dark:text-white mb-2">It's quiet here</p>
+                    <p className="text-sm max-w-sm">No messages yet. Scan your code to see what others will experience.</p>
                   </div>
                 ) : (
                   messages.map((msg) => (
@@ -343,35 +329,43 @@ function Dashboard({ user, onLogout }: { user: User, onLogout: () => void }) {
                       initial={{ opacity: 0, y: 15 }}
                       animate={{ opacity: 1, y: 0 }}
                       exit={{ opacity: 0, scale: 0.95 }}
-                      className="group bg-white border border-gray-100 p-6 rounded-2xl relative shadow-sm hover:shadow-md transition-all duration-300 ring-1 ring-black/5"
+                      layout
+                      className="group bg-white dark:bg-slate-900 border border-gray-200 dark:border-slate-800 p-6 md:p-8 rounded-[1.5rem] relative shadow-sm hover:shadow-md transition-all duration-300"
                     >
-                      <div className="flex justify-between items-center mb-3">
+                      <div className="flex justify-between items-center mb-4">
                         <div className="flex items-center gap-2">
-                           <div className="w-2 h-2 bg-indigo-500 rounded-full" />
-                           <span className="text-[10px] uppercase font-black text-indigo-500 tracking-wider">New Notification</span>
+                           <div className="p-1.5 bg-indigo-100 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 rounded-lg">
+                             {msg.voiceData ? <Mic size={14} /> : <MessageSquare size={14} />}
+                           </div>
+                           <span className="text-xs uppercase font-bold text-gray-500 dark:text-slate-400 tracking-wider">
+                             {msg.voiceData ? 'Voice Note' : 'Text Message'}
+                           </span>
                         </div>
-                        <span className="text-xs font-medium text-gray-400">
-                          {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        <span className="text-xs font-semibold text-gray-400 dark:text-slate-500">
+                          {new Date(msg.timestamp).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}
                         </span>
                       </div>
-                           {msg.text && <p className="text-gray-900 text-lg font-medium leading-relaxed mb-4">{msg.text}</p>}
-                           {msg.voiceData && (
-                             <div className="mb-4 bg-indigo-50 p-3 rounded-xl flex items-center gap-3">
-                               <div className="w-8 h-8 bg-indigo-600 rounded-full flex items-center justify-center text-white">
-                                 <Volume2 size={16} />
-                               </div>
-                               <audio src={msg.voiceData} controls className="h-8 flex-1" />
-                             </div>
-                           )}
-                      <div className="flex justify-between items-center">
-                        <span className="text-[10px] text-gray-400 italic">
-                          {new Date(msg.timestamp).toLocaleDateString()}
-                        </span>
+                      
+                      {msg.text && (
+                        <p className="text-gray-900 dark:text-gray-100 text-lg font-medium leading-relaxed mb-6">{msg.text}</p>
+                      )}
+                      
+                      {msg.voiceData && (
+                        <div className="mb-6 bg-gray-50 dark:bg-slate-800/50 p-4 rounded-2xl flex items-center gap-4">
+                          <div className="w-10 h-10 bg-indigo-600 dark:bg-indigo-500 rounded-full flex items-center justify-center text-white shadow-md">
+                            <Volume2 size={18} />
+                          </div>
+                          <audio src={msg.voiceData} controls className="h-10 flex-1 rounded-xl outline-none bg-transparent" />
+                        </div>
+                      )}
+                      
+                      <div className="absolute bottom-4 right-4 md:bottom-6 md:right-6">
                         <button 
                           onClick={() => deleteMessage(msg.id)}
-                          className="flex items-center gap-1.5 px-3 py-1.5 bg-red-50 text-red-600 rounded-lg text-xs font-bold opacity-0 group-hover:opacity-100 transition-all hover:bg-red-100"
+                          className="p-2 text-gray-300 dark:text-slate-600 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-xl transition-all"
+                          title="Delete message"
                         >
-                          <Trash2 size={12} /> Delete
+                          <Trash2 size={18} />
                         </button>
                       </div>
                     </motion.div>
@@ -382,17 +376,15 @@ function Dashboard({ user, onLogout }: { user: User, onLogout: () => void }) {
           </div>
         </section>
       </main>
-
-      <footer className="py-8 text-center text-gray-400 text-xs no-print">
-        <p>QRBell • Simple & Private Networking • 2026</p>
-      </footer>
     </div>
   );
 }
 
 function PublicReach() {
   const { userId } = useParams();
-  const [recipient, setRecipient] = useState<{name: string, phone?: string} | null>(null);
+  const [recipient, setRecipient] = useState<UserProfile | null>(null);
+  const [loadingRecipient, setLoadingRecipient] = useState(true);
+  
   const [text, setText] = useState('');
   const [status, setStatus] = useState<'idle' | 'sending' | 'success' | 'error'>('idle');
   
@@ -400,16 +392,20 @@ function PublicReach() {
   const [isRecording, setIsRecording] = useState(false);
   const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
   const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
+  const { theme, toggleTheme } = useTheme();
 
   useEffect(() => {
     const fetchUser = async () => {
       if (!userId) return;
       try {
-        const res = await fetch(`/api/users/${userId}`);
-        const data = await res.json();
-        if (res.ok) setRecipient(data);
+        const docSnap = await getDoc(doc(db, 'users', userId));
+        if (docSnap.exists()) {
+          setRecipient(docSnap.data() as UserProfile);
+        }
       } catch (err) {
         console.error("Failed to fetch recipient name");
+      } finally {
+        setLoadingRecipient(false);
       }
     };
     fetchUser();
@@ -432,7 +428,7 @@ function PublicReach() {
       setMediaRecorder(recorder);
       setIsRecording(true);
     } catch (err) {
-      alert("Mic access denied. Please allow microphone to record voice messages.");
+      alert("Microphone access denied. Please allow microphone permissions to record voice notes.");
     }
   };
 
@@ -459,85 +455,86 @@ function PublicReach() {
     try {
       const voiceData = audioBlob ? await blobToBase64(audioBlob) : undefined;
       
-      const res = await fetch(`/api/messages/${userId}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: text.trim() || undefined, voiceData }),
-      });
-      if (!res.ok) throw new Error('Send failed');
+      const payload: Omit<Message, 'id'> = {
+        toUserId: userId,
+        text: text.trim() || undefined,
+        voiceData: voiceData,
+        timestamp: new Date().toISOString()
+      };
+
+      await addDoc(collection(db, 'messages'), payload);
+      
       setStatus('success');
       setText('');
       setAudioBlob(null);
     } catch (err) {
+      console.error(err);
       setStatus('error');
     }
   };
 
   if (!userId) return <Navigate to="/" />;
+  
+  if (loadingRecipient) {
+    return <Loader />;
+  }
 
   return (
-    <div className="min-h-screen bg-indigo-600/5 md:bg-gray-100 flex flex-col items-center justify-center p-4">
+    <div className="min-h-screen bg-gray-50 dark:bg-slate-950 flex flex-col items-center justify-center p-4 transition-colors">
+      <button onClick={toggleTheme} className="fixed top-6 right-6 p-3 bg-white/50 dark:bg-slate-800/50 rounded-full shadow-sm backdrop-blur-sm border border-gray-200 dark:border-slate-800 transition-all text-gray-800 dark:text-gray-200 z-10">
+        {theme === 'light' ? <Moon size={20} /> : <Sun size={20} />}
+      </button>
+
       <motion.div 
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
-        className="max-w-xl w-full bg-white rounded-3xl shadow-2xl overflow-hidden border border-gray-100"
+        className="max-w-xl w-full bg-white dark:bg-slate-900 rounded-[2.5rem] shadow-2xl overflow-hidden border border-gray-200 dark:border-slate-800 mt-12 mb-12 relative"
       >
-        <div className="bg-indigo-600 p-10 text-white text-center relative overflow-hidden">
-          <Send className="absolute -left-10 -bottom-10 w-48 h-48 opacity-10 rotate-12" />
+        <div className="bg-gradient-to-br from-indigo-600 to-purple-600 dark:from-indigo-950 dark:to-slate-900 p-10 text-white text-center relative overflow-hidden">
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(255,255,255,0.1),transparent_50%)]" />
           
-          {recipient?.phone && (
-            <button 
-              onClick={() => {
-                window.location.href = `tel:${recipient.phone}`;
-              }}
-              className="absolute top-6 right-6 p-3 bg-white/20 hover:bg-white/30 rounded-2xl border border-white/30 transition-all backdrop-blur-md active:scale-95 flex items-center gap-2 font-bold text-sm"
-              title="Urgent Call"
-            >
-              <Phone size={18} className="animate-pulse" /> Call Now
-            </button>
-          )}
-
-          <div className="w-20 h-20 bg-white/20 rounded-3xl flex items-center justify-center mx-auto mb-6 border border-white/30 backdrop-blur-sm">
-            <Send size={36} />
+          <div className="w-20 h-20 bg-white/20 rounded-3xl flex items-center justify-center mx-auto mb-6 border border-white/20 backdrop-blur-md">
+            <QrCode size={36} />
           </div>
-          <h1 className="text-3xl font-black mb-3 italic tracking-tight uppercase">Reach Out</h1>
-          <p className="text-indigo-100 font-medium">Sending to <b>{recipient?.name || 'a private user'}</b></p>
+          <h1 className="text-3xl font-extrabold mb-2 tracking-tight">QRBell</h1>
+          <p className="text-indigo-100 font-medium">Reaching out to <span className="text-white font-bold">{recipient?.name || 'a private user'}</span></p>
         </div>
 
-        <div className="p-8 md:p-12">
+        <div className="p-8 md:p-10">
           {recipient?.phone && (
-              <div className="mb-8 p-6 bg-red-50 border-2 border-dashed border-red-200 rounded-3xl flex flex-col items-center text-center">
-                <div className="w-12 h-12 bg-red-100 rounded-full flex items-center justify-center text-red-600 mb-3 animate-bounce">
+              <div className="mb-10 p-6 bg-red-50 dark:bg-red-900/20 border border-red-100 dark:border-red-900/50 rounded-3xl flex flex-col items-center text-center">
+                <div className="w-12 h-12 bg-red-100 dark:bg-red-900/50 rounded-2xl flex items-center justify-center text-red-600 dark:text-red-400 mb-4">
                   <Phone size={24} />
                 </div>
-                <h3 className="text-lg font-bold text-red-900 mb-1">Is it an emergency?</h3>
-                <p className="text-red-700 text-sm mb-4">If it's truly urgent, you can try calling the owner directly.</p>
+                <h3 className="text-lg font-extrabold text-red-900 dark:text-red-400 mb-2">Emergency Call active</h3>
+                <p className="text-red-700/80 dark:text-red-400/80 text-sm mb-6 leading-relaxed">Only call this person directly if it is an absolute emergency.</p>
                 <a 
                   href={`tel:${recipient.phone}`}
-                  className="px-8 py-3 bg-red-600 text-white font-bold rounded-2xl shadow-lg shadow-red-200 hover:bg-red-700 transition-all flex items-center gap-2 active:scale-95"
+                  className="px-8 py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl shadow-lg shadow-red-600/30 dark:shadow-none transition-all flex items-center gap-2 active:scale-95"
                 >
-                  <Phone size={18} /> Call Recipient
+                  <Phone size={18} /> Initiate Call
                 </a>
               </div>
           )}
+          
           <AnimatePresence mode="wait">
             {status === 'success' ? (
               <motion.div 
                 key="success"
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
                 className="text-center py-10"
               >
-                <div className="w-24 h-24 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-8 text-green-600">
+                <div className="w-24 h-24 bg-green-100 dark:bg-green-900/30 rounded-3xl flex items-center justify-center mx-auto mb-8 text-green-600 dark:text-green-400">
                   <CheckCircle2 size={48} />
                 </div>
-                <h2 className="text-3xl font-bold text-gray-900 mb-2">Message Sent!</h2>
-                <p className="text-gray-500 mb-10 text-lg">Your contact request was delivered securely.</p>
+                <h2 className="text-3xl font-extrabold text-gray-900 dark:text-white mb-3 tracking-tight">Sent Successfully</h2>
+                <p className="text-gray-500 dark:text-slate-400 mb-10 text-lg">Your message was delivered securely.</p>
                 <button 
                   onClick={() => setStatus('idle')}
-                  className="px-10 py-4 bg-gray-900 hover:bg-black text-white font-bold rounded-2xl transition-all shadow-xl active:scale-95"
+                  className="px-8 py-4 bg-gray-100 hover:bg-gray-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-gray-900 dark:text-white font-bold rounded-2xl transition-all"
                 >
-                  Close Messenger
+                  Send Another
                 </button>
               </motion.div>
             ) : (
@@ -548,96 +545,91 @@ function PublicReach() {
                 onSubmit={handleSend}
                 className="space-y-8"
               >
-                <div className="bg-gray-50 border border-gray-100 p-5 rounded-2xl flex gap-4 text-sm text-gray-600 leading-relaxed shadow-inner">
-                   <div className="flex-shrink-0 w-8 h-8 bg-white rounded-lg flex items-center justify-center shadow-sm">
-                      <ShieldCheck className="text-indigo-500" size={18} />
-                   </div>
-                   <p>Your identity is <b>completely hidden</b>. No account, email, or mobile number is required to send this.</p>
-                </div>
-
-                <div className="space-y-4">
-                  <div className="space-y-3">
-                    <label className="text-sm font-black text-gray-500 uppercase tracking-widest ml-1">Option 1: Text Message</label>
+                <div className="space-y-5">
+                  <div>
+                    <label className="block text-sm font-bold text-gray-900 dark:text-white mb-3">Send a Text Message</label>
                     <textarea
-                      className="w-full bg-gray-50 border-2 border-transparent focus:border-indigo-500 focus:bg-white rounded-[2rem] p-6 min-h-[150px] outline-none transition-all resize-none text-xl font-medium shadow-inner"
-                      placeholder="E.g. Your car tire looks low / Can you please move your bike?"
+                      className="w-full bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 focus:border-indigo-500 dark:focus:border-indigo-400 focus:ring-2 focus:ring-indigo-500/20 rounded-[1.5rem] p-6 min-h-[140px] outline-none transition-all resize-none text-lg text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 block"
+                      placeholder="e.g., Your car lights are on..."
                       value={text}
                       onChange={(e) => setText(e.target.value)}
                     />
                   </div>
 
-                  <div className="space-y-3">
-                    <label className="text-sm font-black text-gray-500 uppercase tracking-widest ml-1">Option 2: Voice Message (Faster)</label>
-                    <div className="flex flex-col items-center gap-3 p-6 bg-indigo-50 border-2 border-dashed border-indigo-200 rounded-[2rem]">
+                  <div className="relative flex items-center py-2">
+                    <div className="flex-grow border-t border-gray-200 dark:border-slate-700"></div>
+                    <span className="flex-shrink-0 mx-4 text-gray-400 dark:text-slate-500 text-xs font-bold uppercase tracking-widest">or record voice</span>
+                    <div className="flex-grow border-t border-gray-200 dark:border-slate-700"></div>
+                  </div>
+
+                  <div>
+                    <div className="flex flex-col items-center justify-center p-8 bg-gray-50 dark:bg-slate-800 border-2 border-dashed border-gray-200 dark:border-slate-700 rounded-[1.5rem] transition-colors">
                       {!audioBlob ? (
                         <button
                           type="button"
                           onClick={isRecording ? stopRecording : startRecording}
-                          className={`w-20 h-20 rounded-full flex items-center justify-center transition-all ${isRecording ? 'bg-red-500 animate-pulse text-white shadow-lg shadow-red-200' : 'bg-white text-indigo-600 shadow-md hover:scale-105'}`}
+                          className={`w-20 h-20 rounded-full flex items-center justify-center transition-all shadow-md active:scale-95 ${isRecording ? 'bg-red-600 text-white animate-pulse shadow-red-600/30' : 'bg-white dark:bg-slate-700 text-indigo-600 dark:text-indigo-400 hover:scale-105'}`}
                         >
-                          {isRecording ? <Square size={32} /> : <Mic size={32} />}
+                          {isRecording ? <Square size={28} className="fill-current" /> : <Mic size={28} />}
                         </button>
                       ) : (
-                        <div className="w-full flex items-center gap-4">
-                           <div className="flex-1 bg-white h-12 rounded-xl flex items-center px-4 gap-3 text-indigo-600 font-bold border border-indigo-100">
-                             <Play size={16} fill="currentColor" /> Voice Note Recorded
+                        <div className="w-full space-y-4 text-center">
+                           <div className="bg-white dark:bg-slate-900 rounded-2xl p-3 flex items-center gap-4 border border-gray-200 dark:border-slate-700">
+                             <div className="w-10 h-10 bg-indigo-100 dark:bg-indigo-900/50 rounded-full flex items-center justify-center text-indigo-600 dark:text-indigo-400">
+                               <Play size={16} className="fill-current" />
+                             </div>
+                             <div className="flex-1 text-left">
+                               <p className="text-sm font-bold text-gray-900 dark:text-white">Voice Note</p>
+                               <p className="text-xs text-gray-500 dark:text-slate-400">Ready to send</p>
+                             </div>
+                             <button 
+                              type="button"
+                              onClick={() => setAudioBlob(null)}
+                              className="p-2 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-xl transition-colors"
+                              title="Delete voice note"
+                             >
+                              <Trash2 size={18} />
+                             </button>
                            </div>
-                           <button 
-                            type="button"
-                            onClick={() => setAudioBlob(null)}
-                            className="text-red-500 font-bold text-sm px-3 py-2"
-                           >
-                            Clear
-                           </button>
                         </div>
                       )}
-                      <p className="text-sm font-bold text-indigo-600">
-                        {isRecording ? 'Recording... Tap to stop' : audioBlob ? 'Voice note ready' : 'Tap mic to record voice'}
-                      </p>
+                      {!audioBlob && (
+                        <p className="mt-4 text-sm font-bold text-gray-500 dark:text-slate-400">
+                          {isRecording ? 'Recording... tap to stop' : 'Tap mic to record audio'}
+                        </p>
+                      )}
                     </div>
                   </div>
                 </div>
 
                 {status === 'error' && (
-                  <div className="p-4 bg-red-50 border border-red-100 text-red-600 rounded-xl text-sm font-bold flex items-center gap-2">
-                    <AlertCircle size={16} /> Something went wrong. Please try again.
+                  <div className="p-4 bg-red-50 dark:bg-red-900/20 border border-red-100 dark:border-red-900/50 text-red-600 dark:text-red-400 rounded-xl text-sm font-bold flex items-center gap-2">
+                    <AlertCircle size={18} /> Delivery failed. Please try again.
                   </div>
                 )}
 
-                <div className="flex flex-col gap-3">
-                  <button
-                    type="submit"
-                    disabled={status === 'sending'}
-                    className="w-full py-5 bg-indigo-600 hover:bg-indigo-700 text-white font-black text-xl rounded-[2rem] shadow-2xl shadow-indigo-600/40 transition-all active:scale-[0.98] disabled:opacity-50 flex items-center justify-center gap-3 uppercase tracking-tight"
-                  >
-                    {status === 'sending' ? (
-                      'Sending...'
-                    ) : (
-                      <>
-                        Send Anonymously <Send size={24} />
-                      </>
-                    )}
-                  </button>
-
-                  {recipient?.phone && (
-                    <button
-                      type="button"
-                      onClick={() => window.location.href = `tel:${recipient.phone}`}
-                      className="w-full py-4 bg-white border-2 border-red-100 text-red-600 font-bold text-lg rounded-[2rem] hover:bg-red-50 transition-all active:scale-[0.98] flex items-center justify-center gap-2 uppercase tracking-tight"
-                    >
-                      <Phone size={20} /> Call Now (Emergency)
-                    </button>
+                <button
+                  type="submit"
+                  disabled={status === 'sending' || (!text.trim() && !audioBlob)}
+                  className="w-full py-5 bg-indigo-600 dark:bg-indigo-500 hover:bg-indigo-700 dark:hover:bg-indigo-400 text-white font-extrabold text-xl rounded-[1.5rem] shadow-xl shadow-indigo-600/30 dark:shadow-none transition-all active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-3"
+                >
+                  {status === 'sending' ? (
+                    'Sending securely...'
+                  ) : (
+                    <>
+                      Send Message <Send size={20} />
+                    </>
                   )}
+                </button>
+                
+                <div className="pt-2 text-center text-xs font-semibold text-gray-400 dark:text-slate-500 flex items-center justify-center gap-1">
+                  <ShieldCheck size={14} /> 100% Anonymous & Secure
                 </div>
               </motion.form>
             )}
           </AnimatePresence>
         </div>
       </motion.div>
-
-      <div className="mt-12 text-center text-gray-400 text-sm">
-        <p className="flex items-center justify-center gap-1">Powered by <span className="font-bold text-gray-500 tracking-tighter flex items-center gap-1"><QrCode size={14}/> QRBell</span></p>
-      </div>
     </div>
   );
 }
@@ -645,27 +637,50 @@ function PublicReach() {
 // --- Main App ---
 
 export default function App() {
-  const [user, setUser] = useState<User | null>(() => {
-    const saved = localStorage.getItem('ar_user');
-    return saved ? JSON.parse(saved) : null;
-  });
+  const [user, setUser] = useState<UserProfile | null>(null);
+  const [authInitialized, setAuthInitialized] = useState(false);
 
-  const handleAuth = (u: User) => {
+  useEffect(() => {
+    const unsubscribe = auth.onAuthStateChanged(async (firebaseUser) => {
+      if (firebaseUser) {
+        const docRef = doc(db, 'users', firebaseUser.uid);
+        const docSnap = await getDoc(docRef);
+        if (docSnap.exists()) {
+          setUser(docSnap.data() as UserProfile);
+        } else {
+          setUser({ uid: firebaseUser.uid, name: firebaseUser.displayName || 'QRBell User', email: firebaseUser.email || '' });
+        }
+      } else {
+        setUser(null);
+      }
+      setAuthInitialized(true);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const handleAuth = (u: UserProfile) => {
     setUser(u);
-    localStorage.setItem('ar_user', JSON.stringify(u));
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    await fbSignOut(auth);
     setUser(null);
-    localStorage.removeItem('ar_user');
   };
+
+  const handleUpdatePhone = (phone: string) => {
+    setUser(prev => prev ? { ...prev, phone } : null);
+  };
+
+  if (!authInitialized) {
+    return <Loader />;
+  }
 
   return (
     <Router>
       <Routes>
         <Route 
           path="/" 
-          element={user ? <Dashboard user={user} onLogout={handleLogout} /> : <Auth onAuth={handleAuth} />} 
+          element={user ? <Dashboard user={user} onLogout={handleLogout} onUpdatePhone={handleUpdatePhone} /> : <Auth onAuth={handleAuth} />} 
         />
         <Route path="/reach/:userId" element={<PublicReach />} />
         <Route path="*" element={<Navigate to="/" />} />
